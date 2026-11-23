@@ -1,6 +1,6 @@
-import { moveOptions, mustStay, freeSidesAfter, pieceAt, analyze, PIECE_TYPES, MAX_PLAYERS } from './rules.js';
-import { t, setLang, applyStatic } from './i18n.js';
-import { detectMode, createNet } from './net.js';
+import { moveOptions, mustStay, freeSidesAfter, pieceAt, analyze, PIECE_TYPES, MAX_PLAYERS } from './rules.js?v=__V__';
+import { t, setLang, applyStatic } from './i18n.js?v=__V__';
+import { detectMode, createNet } from './net.js?v=__V__';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));

@@ -2,7 +2,7 @@
 //  - 'ws'  : a Node server (server.js) runs the engine; browsers talk to it over WebSocket.
 //  - 'p2p' : static hosting (GitHub Pages). The room creator's browser runs the engine and the
 //            others connect to it directly over WebRTC (PeerJS; its public broker only does signalling).
-import { createEngine, randomCode } from './engine.js';
+import { createEngine, randomCode } from './engine.js?v=__V__';
 
 const PEER_PREFIX = 'wall-territory-v1-';
 const PEER_OPTS = { debug: 1 };

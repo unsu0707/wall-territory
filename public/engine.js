@@ -6,7 +6,7 @@
 import {
   COLORS, PIECE_TYPES, MAX_PLAYERS, emptyWalls, setWall, pieceAt, findMove, mustStay, freeSides, freeSidesAfter,
   legalActions, analyze,
-} from './rules.js';
+} from './rules.js?v=__V__';
 
 const isDirs = (a) => Array.isArray(a) && a.length <= 2 && a.every((d) => ['up', 'down', 'left', 'right'].includes(d));
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
