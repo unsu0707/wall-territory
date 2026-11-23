@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wall Territory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;600;700&family=IBM+Plex+Sans+JP:wght@400;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="toast" class="toast"></div>
+
+<!-- Home -->
+<section id="home" class="screen">
+  <div class="home-card">
+    <div class="lang-switch home-lang"><button data-lang="ko">한국어</button><button data-lang="ja">日本語</button></div>
+    <div class="logo"><span>WALL</span><span>TERRITORY</span></div>
+    <p class="tag" data-i18n="home.tag"></p>
+    <label class="field"><span data-i18n="home.name"></span><input id="nameInput" maxlength="12" data-i18n-ph="home.namePh"></label>
+    <button id="createBtn" class="btn primary" data-i18n="home.create"></button>
+    <div class="join-row">
+      <input id="codeInput" maxlength="4" data-i18n-ph="home.codePh" autocomplete="off">
+      <button id="joinBtn" class="btn" data-i18n="home.join"></button>
+    </div>
+    <details class="rules">
+      <summary data-i18n="rules.title"></summary>
+      <ol>
+        <li data-i18n-html="rules.1"></li>
+        <li data-i18n-html="rules.2"></li>
+        <li data-i18n-html="rules.3"></li>
+        <li data-i18n-html="rules.4"></li>
+        <li data-i18n-html="rules.5"></li>
+      </ol>
+    </details>
+  </div>
+</section>
+
+<!-- Room -->
+<section id="room" class="screen hidden">
+  <header class="topbar">
+    <div class="brand">WALL TERRITORY</div>
+    <button id="codeChip" class="code-chip"><span data-i18n="room.code"></span> <b id="roomCode">----</b> <span data-i18n="room.copy"></span></button>
+    <div class="lang-switch"><button data-lang="ko">한</button><button data-lang="ja">日</button></div>
+    <button id="leaveBtn" class="btn ghost small" data-i18n="room.leave"></button>
+  </header>
+
+  <main class="layout">
+    <div class="board-col">
+      <div id="status" class="status"></div>
+      <div class="board-wrap"><svg id="board" class="board"></svg></div>
+      <div id="actionBar" class="action-bar"></div>
+    </div>
+
+    <aside class="side">
+      <div id="lobbyPanel" class="panel">
+        <h3 data-i18n="lobby.title"></h3>
+        <div class="settings">
+          <label><span data-i18n="set.size"></span><select id="setSize"></select></label>
+          <label><span data-i18n="set.pieces"></span><select id="setPieces"></select></label>
+          <label><span data-i18n="set.steps"></span><select id="setSteps"></select></label>
+          <label><span data-i18n="set.time"></span><select id="setTime"></select></label>
+        </div>
+        <button id="startBtn" class="btn primary wide" data-i18n="lobby.start"></button>
+        <p id="lobbyHint" class="hint"></p>
+        <p id="p2pHint" class="hint hidden" data-i18n="hint.p2p"></p>
+      </div>
+
+      <div class="panel">
+        <h3 id="playersTitle"></h3>
+        <ul id="playerList" class="players"></ul>
+      </div>
+
+      <div id="resultPanel" class="panel hidden">
+        <h3 data-i18n="result.title"></h3>
+        <ol id="resultList" class="result"></ol>
+        <button id="againBtn" class="btn primary wide" data-i18n="result.again"></button>
+      </div>
+
+      <div class="panel chat-panel">
+        <h3 data-i18n="chat.title"></h3>
+        <div id="chatLog" class="chat-log"></div>
+        <form id="chatForm" class="chat-form"><input id="chatInput" maxlength="200" data-i18n-ph="chat.ph" autocomplete="off"><button class="btn small" data-i18n="chat.send"></button></form>
+      </div>
+    </aside>
+  </main>
+</section>
+
+<script type="module" src="client.js"></script>
+</body>
+</html>
