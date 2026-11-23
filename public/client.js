@@ -74,11 +74,14 @@ function onStatus(key, info) {
   else if (key === 'connecting') toast(t('toast.connecting'));
   else if (key === 'peerError') toast(t('toast.peerError', { info: info || '' }));
 }
-const net = createNet(await detectMode(), {
+// Buttons must work the moment the page shows, so the transport is created in the background
+// and actions wait for it instead of the whole module blocking on detectMode().
+let net = { mode: 'p2p', isHostDevice: () => false, send() { toast(t('toast.connecting')); }, leave() {} };
+const netReady = detectMode().then((mode) => (net = createNet(mode, {
   message: onMessage,
   status: onStatus,
   resumeMsg: (code) => ({ t: 'join', code, name: store.get('wt_name') || '', token }),
-});
+})));
 function send(obj) { net.send({ ...obj, token }); }
 
 let toastTimer;
@@ -102,12 +105,17 @@ function getName() {
   store.set('wt_name', name);
   return name;
 }
-$('createBtn').onclick = () => { const name = getName(); if (name) net.create({ t: 'create', name, token }); };
+$('createBtn').onclick = () => {
+  const name = getName(); if (!name) return;
+  setBusy('creating');
+  netReady.then((n) => n.create({ t: 'create', name, token }));
+};
 $('joinBtn').onclick = () => {
   const name = getName(); if (!name) return;
   const code = $('codeInput').value.trim().toUpperCase();
   if (code.length !== 4) return toast(t('toast.needCode'));
-  net.join(code, { t: 'join', code, name, token });
+  setBusy('joining');
+  netReady.then((n) => n.join(code, { t: 'join', code, name, token }));
 };
 $('codeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('joinBtn').click(); });
 $('nameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') ($('codeInput').value ? $('joinBtn') : $('createBtn')).click(); });

@@ -86,6 +86,15 @@ function pacedSender(publish, gap = 120) {
     if (!timer) timer = setTimeout(flush, q.length === 1 ? 0 : gap);
   };
 }
+// PeerJS / mqtt.js load with `async`, so wait for their globals when first needed.
+const waitGlobal = (name, ms = 10000) => new Promise((resolve) => {
+  const t0 = Date.now();
+  (function check() {
+    if (window[name]) return resolve(window[name]);
+    if (Date.now() - t0 > ms) return resolve(null);
+    setTimeout(check, 100);
+  })();
+});
 const rid = () => Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
 
 function p2pNet(h) {
@@ -107,7 +116,8 @@ function p2pNet(h) {
   });
   const topic = (c, ...rest) => RELAY_PREFIX + [c, ...rest].join('/');
 
-  function connectBroker(url, opts = {}) {
+  async function connectBroker(url, opts = {}) {
+    await waitGlobal('mqtt');
     return new Promise((resolve) => {
       if (!window.mqtt) return resolve(null);
       const client = window.mqtt.connect(url, { connectTimeout: 6000, reconnectPeriod: 2000, clean: true, ...opts });
@@ -145,7 +155,8 @@ function p2pNet(h) {
 
     // WebRTC listener (fixed peer id = room code)
     let idRetry = 0;
-    const openPeer = () => {
+    const openPeer = async () => {
+      await waitGlobal('Peer');
       if (!window.Peer || my !== session) return hostReady();
       peer = new window.Peer(PEER_PREFIX + code, PEER_OPTS);
       peer.on('open', hostReady);
@@ -230,7 +241,8 @@ function p2pNet(h) {
     setTimeout(() => attempt(my, joinMsg), 1500);
   }
 
-  function tryRtc(my, joinMsg) {
+  async function tryRtc(my, joinMsg) {
+    await waitGlobal('Peer');
     return new Promise((resolve) => {
       if (!window.Peer) return resolve(false);
       let settled = false;
