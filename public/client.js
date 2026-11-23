@@ -21,16 +21,19 @@ let skew = 0;
 let sel = null; // { piece, opt } — opt is a move option from rules.moveOptions
 let placeType = 'square';
 let breakMode = false;
+let awaitingUntil = 0; // after sending an action, ignore board clicks until the host answers
 let lastSeenChat = 0;
 
 // ---------- connection ----------
 function onMessage(msg) {
   if (msg.t === 'joined') {
+    setBusy(false);
     you = msg.you;
     store.set('wt_room', msg.code);
     history.replaceState(null, '', `?room=${msg.code}`);
     show('room');
   } else if (msg.t === 'room') {
+    awaitingUntil = 0;
     skew = msg.now - Date.now();
     const prevTurn = room?.game && `${room.game.phase}:${room.game.current}:${room.game.turnCount}:${room.game.placeIndex}`;
     room = msg.room;
@@ -39,8 +42,10 @@ function onMessage(msg) {
     if (prevTurn !== nowTurn) { sel = null; breakMode = false; }
     render();
   } else if (msg.t === 'error') {
+    awaitingUntil = 0;
     toast(t('err.' + msg.key, msg.params));
-    if (msg.key === 'noRoom' && !room) goHome();
+    if (['connectFail', 'hostLost', 'hostClosed'].includes(msg.key) || (msg.key === 'noRoom' && !room)) goHome();
+    setBusy(false);
   } else if (msg.t === 'left') {
     goHome();
   } else if (msg.t === 'kicked') {
@@ -49,12 +54,22 @@ function onMessage(msg) {
 }
 function goHome() {
   room = null;
+  setBusy(false);
   net.leave();
   store.set('wt_room', null);
   history.replaceState(null, '', location.pathname);
   show('home');
 }
+function setBusy(kind) {
+  const c = $('createBtn'), j = $('joinBtn');
+  c.disabled = j.disabled = !!kind;
+  c.textContent = t(kind === 'creating' ? 'home.creating' : 'home.create');
+  j.textContent = t(kind === 'joining' ? 'home.joining' : 'home.join');
+}
 function onStatus(key, info) {
+  if (key === 'joining' || key === 'creating') { if (!room) setBusy(key); return; }
+  if (key === 'relay') { toast(t('toast.relay'), true); return; }
+  if (key === 'joinFailed') { setBusy(false); return; }
   if (key === 'disconnected' || key === 'hostGone') { if (room) toast(t('toast.' + key), true); }
   else if (key === 'connecting') toast(t('toast.connecting'));
   else if (key === 'peerError') toast(t('toast.peerError', { info: info || '' }));
@@ -384,16 +399,18 @@ $('board').addEventListener('click', (e) => {
   if (!g) return;
   const me = myIndex();
   if (g.current !== me || g.phase === 'ended') return;
+  if (Date.now() < awaitingUntil) return;
+  const act = (obj) => { awaitingUntil = Date.now() + 4000; send(obj); };
   const wallEl = e.target.closest('[data-wall]');
   const pieceEl = e.target.closest('[data-p]');
   const cellEl = e.target.closest('[data-r]');
 
   if (g.phase === 'placement') {
-    if (cellEl) send({ t: 'place', r: +cellEl.dataset.r, c: +cellEl.dataset.c, type: placeType });
+    if (cellEl) act({ t: 'place', r: +cellEl.dataset.r, c: +cellEl.dataset.c, type: placeType });
     return;
   }
   if (wallEl && sel?.opt) {
-    send({ t: 'move', piece: sel.piece, path: sel.opt.path, brk: !!sel.opt.broken, dir: wallEl.dataset.wall });
+    act({ t: 'move', piece: sel.piece, path: sel.opt.path, brk: !!sel.opt.broken, dir: wallEl.dataset.wall });
     return;
   }
   if (pieceEl && +pieceEl.dataset.p === me && !pieceEl.classList.contains('ghost-piece')) {

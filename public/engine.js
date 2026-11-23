@@ -55,7 +55,10 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
     for (const m of room.members) if (m.connected && m.conn) sendTo(m.conn, payload);
     onChange?.(room);
   }
-  const err = (connId, key, params) => sendTo(connId, { t: 'error', key, params });
+  const err = (connId, key, params) => {
+    sendTo(connId, { t: 'error', key, params });
+    if (['notPlacement', 'notPlay', 'notYourTurn', 'occupied', 'cantMove', 'cantWall', 'badType', 'breakUsed', 'mustMove'].includes(key)) resync(connId);
+  };
   const sysChat = (room, key, params = {}) => room.chat.push({ sys: true, key, params, at: Date.now() });
 
   // ---------- game flow ----------
@@ -236,6 +239,13 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
   function handle(connId, msg) {
     if (!msg || typeof msg !== 'object') return;
     try { handleInner(connId, msg); } catch (e) { console.error(e); err(connId, 'server'); }
+  }
+
+  // A rejected action usually means the client's view is stale (e.g. a dropped relay message):
+  // send that player the current state so it heals itself.
+  function resync(connId) {
+    const { room } = memberOf(connId);
+    if (room) sendTo(connId, { t: 'room', room: roomView(room), now: Date.now() });
   }
 
   function handleInner(connId, msg) {
