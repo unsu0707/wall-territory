@@ -1,4 +1,4 @@
-import { reachable, freeSides, pieceAt, analyze, defaultPieces } from './rules.js';
+import { moveOptions, mustStay, freeSidesAfter, pieceAt, analyze, PIECE_TYPES, MAX_PLAYERS } from './rules.js';
 import { t, setLang, applyStatic } from './i18n.js';
 import { detectMode, createNet } from './net.js';
 
@@ -18,7 +18,9 @@ if (!token) { token = (crypto.randomUUID?.() || Math.random().toString(36).slice
 let room = null;
 let you = null;
 let skew = 0;
-let sel = null; // { piece, dest }
+let sel = null; // { piece, opt } — opt is a move option from rules.moveOptions
+let placeType = 'square';
+let breakMode = false;
 let lastSeenChat = 0;
 
 // ---------- connection ----------
@@ -34,7 +36,7 @@ function onMessage(msg) {
     room = msg.room;
     const g = room.game;
     const nowTurn = g && `${g.phase}:${g.current}:${g.turnCount}:${g.placeIndex}`;
-    if (prevTurn !== nowTurn) sel = null;
+    if (prevTurn !== nowTurn) { sel = null; breakMode = false; }
     render();
   } else if (msg.t === 'error') {
     toast(t('err.' + msg.key, msg.params));
@@ -108,16 +110,14 @@ $('codeChip').onclick = async () => {
 };
 function fillOptions() {
   const opts = (list) => list.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
-  $('setSize').innerHTML = opts([5, 6, 7, 8, 9, 10, 11].map((s) => [s, `${s}×${s}`]));
-  $('setPieces').innerHTML = opts([[0, t('opt.auto')], ...[1, 2, 3, 4, 5, 6].map((k) => [k, t('opt.pieces', { k })])]);
-  $('setSteps').innerHTML = opts([1, 2, 3].map((k) => [k, t('opt.steps', { k })]));
+  $('setSize').innerHTML = opts([5, 6, 7, 8, 9].map((s) => [s, `${s}×${s}`]));
   $('setTime').innerHTML = opts([...[30, 60, 90, 120].map((k) => [k, t('opt.secs', { k })]), [0, t('opt.none')]]);
 }
 function refreshLang() { applyStatic(); fillOptions(); render(); }
 document.querySelectorAll('[data-lang]').forEach((b) => (b.onclick = () => { setLang(b.dataset.lang); refreshLang(); }));
 refreshLang();
 const bindSetting = (id, key) => ($(id).onchange = (e) => send({ t: 'settings', [key]: Number(e.target.value) }));
-bindSetting('setSize', 'size'); bindSetting('setPieces', 'pieces'); bindSetting('setSteps', 'moveSteps'); bindSetting('setTime', 'turnSeconds');
+bindSetting('setSize', 'size'); bindSetting('setTime', 'turnSeconds');
 $('startBtn').onclick = () => send({ t: 'start' });
 $('againBtn').onclick = () => send({ t: 'lobby' });
 $('chatForm').onsubmit = (e) => {
@@ -141,16 +141,16 @@ function render() {
 
   // lobby settings
   const st = room.settings;
-  $('setSize').value = st.size; $('setPieces').value = st.pieces; $('setSteps').value = st.moveSteps; $('setTime').value = st.turnSeconds;
-  for (const id of ['setSize', 'setPieces', 'setSteps', 'setTime']) $(id).disabled = !isHost;
+  $('setSize').value = st.size; $('setTime').value = st.turnSeconds;
+  for (const id of ['setSize', 'setTime']) $(id).disabled = !isHost;
   const online = room.members.filter((m) => m.connected).length;
   $('startBtn').disabled = !isHost || online < 2;
   $('startBtn').classList.toggle('hidden', !isHost);
-  const seats = Math.min(online, 4);
+  const seats = Math.min(online, MAX_PLAYERS);
   $('lobbyHint').textContent = !isHost
     ? t('lobby.wait')
     : online < 2 ? t('lobby.invite')
-    : t('lobby.ready', { seats, per: st.pieces || defaultPieces(seats) }) + (online > 4 ? t('lobby.overflow') : '');
+    : t('lobby.ready', { seats }) + (online > MAX_PLAYERS ? t('lobby.overflow') : '');
 
   $('p2pHint').classList.toggle('hidden', net.mode !== 'p2p');
   renderPlayers();
@@ -181,6 +181,7 @@ function renderPlayers() {
       <span class="sw" style="background:${p.color}"></span>
       <span class="nm ${off ? 'off' : ''}">${esc(p.name)}${p.id === you ? t('players.me') : ''}</span>
       ${a.sealed[i] && g.phase === 'play' ? `<span class="badge">${t('badge.sealed')}</span>` : ''}
+      ${g.phase !== 'ended' ? `<span class="badge ${p.breakUsed ? 'used' : ''}" title="${t('badge.breakTip')}">${t('badge.break')}</span>` : ''}
       ${off ? `<span class="badge">${t('badge.offline')}</span>` : ''}
       <span class="score">${a.scores[i]}</span></li>`;
   }).join('');
@@ -200,8 +201,9 @@ function renderStatus() {
     bar.textContent = '';
     return;
   }
+  const me = myIndex();
   const cur = g.players[g.current];
-  const mine = g.current === myIndex() && g.phase !== 'ended';
+  const mine = g.current === me && g.phase !== 'ended';
   el.className = 'status' + (mine ? ' mine' : '');
   let text;
   const prog = { i: g.placeIndex + 1, n: g.placeTotal, name: esc(cur.name) };
@@ -211,18 +213,38 @@ function renderStatus() {
   el.innerHTML = `${g.phase !== 'ended' ? `<span class="dot" style="background:${cur.color}"></span>` : ''}<span>${text}</span><span class="timer" id="timer"></span>`;
   tickTimer();
 
-  if (g.phase === 'play' && mine) {
-    if (!sel) bar.textContent = t('bar.pick');
-    else if (!sel.dest) bar.innerHTML = t('bar.dest');
-    else bar.innerHTML = `${t('bar.wall')} <button class="btn small ghost" id="cancelSel">${t('bar.repick')}</button>`;
-    const c = document.getElementById('cancelSel');
-    if (c) c.onclick = () => { sel = null; render(); };
+  bar.innerHTML = '';
+  if (g.phase === 'placement' && mine) {
+    const left = remainingTypes(g.players[me]);
+    if (!left.includes(placeType)) placeType = left[0];
+    bar.innerHTML = `<span>${t('bar.placeType')}</span>` + left.map((ty) =>
+      `<button class="btn small type-btn ${ty === placeType ? 'on' : ''}" data-type="${ty}">${typeIcon(ty)} ${t('piece.' + ty)}</button>`).join('');
+    bar.querySelectorAll('[data-type]').forEach((b) => (b.onclick = () => { placeType = b.dataset.type; render(); }));
+  } else if (g.phase === 'play' && mine) {
+    const pl = g.players[me];
+    const stay = mustStay(g, me);
+    let hint;
+    if (!sel) hint = stay ? t('bar.stuck') : t('bar.pick');
+    else if (!sel.opt) hint = t('bar.dest');
+    else hint = t('bar.wall');
+    bar.innerHTML = `<span>${hint}</span>`;
+    if (!pl.breakUsed && !stay) {
+      bar.insertAdjacentHTML('beforeend', `<button class="btn small break-btn ${breakMode ? 'on' : ''}" id="breakBtn">${t(breakMode ? 'bar.breakOn' : 'bar.breakOff')}</button>`);
+      $('breakBtn').onclick = () => { breakMode = !breakMode; if (sel) sel.opt = null; render(); };
+    }
+    if (sel) {
+      bar.insertAdjacentHTML('beforeend', `<button class="btn small ghost" id="cancelSel">${t('bar.repick')}</button>`);
+      $('cancelSel').onclick = () => { sel = null; render(); };
+    }
   } else if (g.phase === 'ended') {
     bar.textContent = t('bar.ended');
   } else {
-    bar.textContent = myIndex() === -1 ? t('bar.spectating') : '';
+    bar.textContent = me === -1 ? t('bar.spectating') : '';
   }
 }
+
+function remainingTypes(pl) { return PIECE_TYPES.filter((ty) => !pl.pieces.some((pc) => pc.type === ty)); }
+const typeIcon = (ty) => (ty === 'square' ? '■' : '●');
 
 function tickTimer() {
   const el = document.getElementById('timer');
@@ -248,6 +270,17 @@ function edgeCoords(r, c, dir) {
   }
 }
 
+// Move options for the selected piece, grouped by destination cell. Prefer a path that breaks nothing.
+function optionsByCell(g, me, k) {
+  const map = new Map();
+  for (const o of moveOptions(g, me, k, breakMode && !g.players[me].breakUsed)) {
+    const key = o.r * g.n + o.c;
+    const prev = map.get(key);
+    if (!prev || (prev.broken && !o.broken)) map.set(key, o);
+  }
+  return map;
+}
+
 function renderBoard() {
   const svg = $('board');
   const g = room.game;
@@ -259,18 +292,15 @@ function renderBoard() {
   const mine = g && g.current === me && g.phase !== 'ended';
   const a = g && g.phase !== 'placement' ? analyze(g) : null;
 
-  let reach = new Set();
-  if (g && g.phase === 'play' && mine && sel && !sel.dest) {
-    for (const cell of reachable(g, me, sel.piece)) reach.add(cell.r * n + cell.c);
-  }
+  let reach = new Map();
+  if (g && g.phase === 'play' && mine && sel && !sel.opt) reach = optionsByCell(g, me, sel.piece);
+  const brokenPreview = sel?.opt?.broken || null;
 
-  // board frame
   parts.push(`<rect x="${PAD - 6}" y="${PAD - 6}" width="${n * S + 12}" height="${n * S + 12}" rx="10" fill="#141820" stroke="#2a313d"/>`);
-  // cells
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
     const i = r * n + c;
     let cls = 'cell' + ((r + c) % 2 ? ' alt' : '');
-    if (reach.has(i)) cls += ' reach';
+    if (reach.has(i)) cls += reach.get(i).broken ? ' reach breakreach' : ' reach';
     if (g && g.phase === 'placement' && mine && !pieceAt(g.players, r, c)) cls += ' placeable';
     parts.push(`<rect class="${cls}" data-r="${r}" data-c="${c}" x="${cx(c) + 1.5}" y="${cy(r) + 1.5}" width="${S - 3}" height="${S - 3}" rx="6"/>`);
     if (a && a.cellOwner[i] !== -1) {
@@ -278,37 +308,44 @@ function renderBoard() {
       parts.push(`<rect pointer-events="none" x="${cx(c) + 1.5}" y="${cy(r) + 1.5}" width="${S - 3}" height="${S - 3}" rx="6" fill="${col}" opacity="${g.phase === 'ended' ? 0.32 : 0.18}"/>`);
     }
   }
-  // intersection dots
   for (let r = 0; r <= n; r++) for (let c = 0; c <= n; c++) parts.push(`<circle class="grid-dot" cx="${cx(c)}" cy="${cy(r)}" r="2.2"/>`);
 
   if (g) {
-    // walls
     const last = g.last?.type === 'move' ? g.last : null;
     const isLast = (r, c, dir) => last && edgeKey(r, c, dir) === edgeKey(last.r, last.c, last.dir);
-    for (let r = 0; r < n - 1; r++) for (let c = 0; c < n; c++) if (g.walls.h[r][c]) {
-      parts.push(`<line class="wall${isLast(r, c, 'down') ? ' new' : ''}" stroke-width="7" x1="${cx(c) + 3}" y1="${cy(r + 1)}" x2="${cx(c + 1) - 3}" y2="${cy(r + 1)}"/>`);
+    const isBrokenPreview = (r, c, dir) => brokenPreview && edgeKey(r, c, dir) === edgeKey(brokenPreview.r, brokenPreview.c, brokenPreview.dir);
+    const wallLine = (r, c, dir, x1, y1, x2, y2) => {
+      if (isBrokenPreview(r, c, dir)) return `<line class="wall broken" stroke-width="7" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+      return `<line class="wall${isLast(r, c, dir) ? ' new' : ''}" stroke-width="7" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`;
+    };
+    for (let r = 0; r < n - 1; r++) for (let c = 0; c < n; c++) if (g.walls.h[r][c]) parts.push(wallLine(r, c, 'down', cx(c) + 3, cy(r + 1), cx(c + 1) - 3, cy(r + 1)));
+    for (let r = 0; r < n; r++) for (let c = 0; c < n - 1; c++) if (g.walls.v[r][c]) parts.push(wallLine(r, c, 'right', cx(c + 1), cy(r) + 3, cx(c + 1), cy(r + 1) - 3));
+    // where the last broken wall used to be
+    if (last?.broken) {
+      const [x1, y1, x2, y2] = edgeCoords(last.broken.r, last.broken.c, last.broken.dir);
+      parts.push(`<line pointer-events="none" stroke="#ff6b6b" stroke-width="3" stroke-dasharray="3 7" stroke-linecap="round" opacity=".8" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`);
     }
-    for (let r = 0; r < n; r++) for (let c = 0; c < n - 1; c++) if (g.walls.v[r][c]) {
-      parts.push(`<line class="wall${isLast(r, c, 'right') ? ' new' : ''}" stroke-width="7" x1="${cx(c + 1)}" y1="${cy(r) + 3}" x2="${cx(c + 1)}" y2="${cy(r + 1) - 3}"/>`);
+    // last move trail (follows the actual path, so the round piece's turn is visible)
+    if (last && last.path?.length) {
+      const DR = { up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1] };
+      let rr = last.from.r, cc = last.from.c;
+      const pts = [[cx(cc) + S / 2, cy(rr) + S / 2]];
+      for (const d of last.path) { rr += DR[d][0]; cc += DR[d][1]; pts.push([cx(cc) + S / 2, cy(rr) + S / 2]); }
+      const col = g.players[last.player].color;
+      parts.push(`<polyline pointer-events="none" points="${pts.map((p) => p.join(',')).join(' ')}" fill="none" stroke="${col}" stroke-width="3" stroke-dasharray="4 6" opacity=".6"/>`);
+      parts.push(`<circle pointer-events="none" cx="${pts[0][0]}" cy="${pts[0][1]}" r="6" fill="none" stroke="${col}" opacity=".5"/>`);
     }
-    // last move trail
-    if (last && (last.from.r !== last.r || last.from.c !== last.c)) {
-      parts.push(`<line pointer-events="none" x1="${cx(last.from.c) + S / 2}" y1="${cy(last.from.r) + S / 2}" x2="${cx(last.c) + S / 2}" y2="${cy(last.r) + S / 2}" stroke="${g.players[last.player].color}" stroke-width="3" stroke-dasharray="4 6" opacity=".6"/>`);
-      parts.push(`<circle pointer-events="none" cx="${cx(last.from.c) + S / 2}" cy="${cy(last.from.r) + S / 2}" r="6" fill="none" stroke="${g.players[last.player].color}" opacity=".5"/>`);
-    }
-    // pieces
     g.players.forEach((p, pi) => p.pieces.forEach((pc, k) => {
       const selected = sel && pi === me && sel.piece === k;
       const movable = mine && g.phase === 'play' && pi === me;
-      const moved = selected && sel.dest && (sel.dest.r !== pc.r || sel.dest.c !== pc.c);
-      parts.push(pieceSvg(pc.r, pc.c, p.color, `piece${movable ? ' mine' : ''}${selected ? ' sel' : ''}${moved ? ' ghost-piece' : ''}`, pi, k, pi === me));
+      const moved = selected && sel.opt && (sel.opt.r !== pc.r || sel.opt.c !== pc.c);
+      parts.push(pieceSvg(pc.r, pc.c, p.color, pc.type, `piece${movable ? ' mine' : ''}${selected ? ' sel' : ''}${moved ? ' ghost-piece' : ''}`, pi, k, pi === me));
     }));
-    // ghost at destination + wall options
-    if (mine && g.phase === 'play' && sel?.dest) {
-      const { r, c } = sel.dest;
+    if (mine && g.phase === 'play' && sel?.opt) {
+      const { r, c } = sel.opt;
       const pc = g.players[me].pieces[sel.piece];
-      if (pc.r !== r || pc.c !== c) parts.push(pieceSvg(r, c, g.players[me].color, 'piece sel', me, sel.piece, true));
-      for (const dir of freeSides(g, r, c)) {
+      if (pc.r !== r || pc.c !== c) parts.push(pieceSvg(r, c, g.players[me].color, pc.type, 'piece sel', me, sel.piece, true));
+      for (const dir of freeSidesAfter(g, sel.opt)) {
         const [x1, y1, x2, y2] = edgeCoords(r, c, dir);
         const sx = (x2 - x1) ? 6 : 0, sy = (y2 - y1) ? 6 : 0;
         parts.push(`<line class="edge-opt" data-wall="${dir}" stroke-width="9" x1="${x1 + sx}" y1="${y1 + sy}" x2="${x2 - sx}" y2="${y2 - sy}"/>`);
@@ -326,12 +363,18 @@ function edgeKey(r, c, dir) {
   return `v${r},${c}`;
 }
 
-function pieceSvg(r, c, color, cls, pi, k, isMine) {
+function pieceSvg(r, c, color, type, cls, pi, k, isMine) {
   const x = cx(c) + S / 2, y = cy(r) + S / 2;
+  const R = S * 0.28;
+  const body = type === 'square'
+    ? `<rect class="body" x="${x - R}" y="${y - R}" width="${R * 2}" height="${R * 2}" rx="5" fill="${color}" stroke-width="2"/>`
+    : `<circle class="body" cx="${x}" cy="${y}" r="${R}" fill="${color}" stroke-width="2"/>`;
+  const ring = type === 'square'
+    ? `<rect class="ring" x="${x - S * 0.37}" y="${y - S * 0.37}" width="${S * 0.74}" height="${S * 0.74}" rx="9" fill="none" stroke="transparent" stroke-width="3"/>`
+    : `<circle class="ring" cx="${x}" cy="${y}" r="${S * 0.37}" fill="none" stroke="transparent" stroke-width="3"/>`;
   return `<g class="${cls}" data-p="${pi}" data-k="${k}">
-    <circle class="ring" cx="${x}" cy="${y}" r="${S * 0.36}" fill="none" stroke="transparent" stroke-width="3"/>
-    <circle class="body" cx="${x}" cy="${y}" r="${S * 0.28}" fill="${color}" stroke-width="2"/>
-    <circle cx="${x - S * 0.08}" cy="${y - S * 0.09}" r="${S * 0.08}" fill="rgba(255,255,255,.35)" pointer-events="none"/>
+    ${ring}${body}
+    <circle cx="${x - S * 0.08}" cy="${y - S * 0.09}" r="${S * 0.07}" fill="rgba(255,255,255,.35)" pointer-events="none"/>
     ${isMine ? `<circle cx="${x}" cy="${y}" r="${S * 0.07}" fill="rgba(0,0,0,.35)" pointer-events="none"/>` : ''}
   </g>`;
 }
@@ -346,24 +389,25 @@ $('board').addEventListener('click', (e) => {
   const cellEl = e.target.closest('[data-r]');
 
   if (g.phase === 'placement') {
-    if (cellEl) send({ t: 'place', r: +cellEl.dataset.r, c: +cellEl.dataset.c });
+    if (cellEl) send({ t: 'place', r: +cellEl.dataset.r, c: +cellEl.dataset.c, type: placeType });
     return;
   }
-  if (wallEl && sel?.dest) {
-    send({ t: 'move', piece: sel.piece, r: sel.dest.r, c: sel.dest.c, dir: wallEl.dataset.wall });
+  if (wallEl && sel?.opt) {
+    send({ t: 'move', piece: sel.piece, path: sel.opt.path, brk: !!sel.opt.broken, dir: wallEl.dataset.wall });
     return;
   }
-  if (pieceEl && +pieceEl.dataset.p === me) {
+  if (pieceEl && +pieceEl.dataset.p === me && !pieceEl.classList.contains('ghost-piece')) {
     const k = +pieceEl.dataset.k;
     const pc = g.players[me].pieces[k];
-    if (sel && sel.piece === k && !sel.dest) sel.dest = { r: pc.r, c: pc.c }; // same piece again → stay in place
-    else sel = { piece: k, dest: null };
+    // Neither piece can move at all → build a wall without moving.
+    if (mustStay(g, me)) sel = { piece: k, opt: { r: pc.r, c: pc.c, path: [], broken: null } };
+    else sel = { piece: k, opt: null };
     render();
     return;
   }
-  if (cellEl && sel && !sel.dest) {
-    const r = +cellEl.dataset.r, c = +cellEl.dataset.c;
-    if (reachable(g, me, sel.piece).some((x) => x.r === r && x.c === c)) { sel.dest = { r, c }; render(); return; }
+  if (cellEl && sel && !sel.opt) {
+    const opt = optionsByCell(g, me, sel.piece).get(+cellEl.dataset.r * g.n + +cellEl.dataset.c);
+    if (opt) { sel.opt = opt; render(); return; }
   }
   if (sel) { sel = null; render(); }
 });

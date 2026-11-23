@@ -71,7 +71,7 @@ html:lang(ja) body { font-family: 'IBM Plex Sans JP', 'IBM Plex Sans KR', system
 .status.mine { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .board-wrap { width: 100%; max-width: 680px; aspect-ratio: 1; }
 .board { width: 100%; height: 100%; display: block; touch-action: manipulation; user-select: none; }
-.action-bar { min-height: 40px; display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 14px; text-align: center; }
+.action-bar { min-height: 40px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; align-items: center; color: var(--muted); font-size: 14px; text-align: center; }
 
 .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
@@ -109,6 +109,11 @@ html:lang(ja) body { font-family: 'IBM Plex Sans JP', 'IBM Plex Sans KR', system
 .cell.alt { fill: var(--cell2); }
 .cell.reach { fill: #3a4458; cursor: pointer; }
 .cell.reach:hover { fill: #4a5670; }
+.cell.breakreach { fill: #4a3236; }
+.cell.breakreach:hover { fill: #63404a; }
+.wall.broken { stroke: #ff6b6b; stroke-dasharray: 4 6; opacity: .9; }
+.type-btn.on, .break-btn.on { background: var(--accent); color: #1a1406; border-color: var(--accent); }
+.players .badge.used { opacity: .45; text-decoration: line-through; }
 .cell.placeable { cursor: pointer; }
 .cell.placeable:hover { fill: #333c4d; }
 .grid-dot { fill: #3a4252; }

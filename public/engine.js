@@ -4,10 +4,11 @@
 //   const engine = createEngine({ sendTo: (connId, obj) => ... });
 //   engine.handle(connId, msg); engine.disconnect(connId);
 import {
-  COLORS, emptyWalls, hasWall, setWall, pieceAt, reachable, legalActions, analyze, defaultPieces,
+  COLORS, PIECE_TYPES, MAX_PLAYERS, emptyWalls, setWall, pieceAt, findMove, mustStay, freeSides, freeSidesAfter,
+  legalActions, analyze,
 } from './rules.js';
 
-const MAX_PLAYERS = 4;
+const isDirs = (a) => Array.isArray(a) && a.length <= 2 && a.every((d) => ['up', 'down', 'left', 'right'].includes(d));
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 function randInt(n) {
@@ -27,7 +28,7 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
     if (!code) do { code = randomCode(); } while (rooms.has(code));
     const room = {
       code, hostId: null, members: [], // { id, token, name, conn, connected }
-      settings: { size: 7, pieces: 0, moveSteps: 2, turnSeconds: 60 },
+      settings: { size: 7, turnSeconds: 90 },
       game: null, chat: [], timer: null, emptySince: null,
     };
     rooms.set(code, room);
@@ -42,7 +43,7 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
       chat: room.chat.slice(-60),
       game: g && {
         n: g.n, settings: g.settings, phase: g.phase, walls: g.walls,
-        players: g.players.map((p) => ({ id: p.id, name: p.name, color: p.color, pieces: p.pieces })),
+        players: g.players.map((p) => ({ id: p.id, name: p.name, color: p.color, pieces: p.pieces, breakUsed: p.breakUsed })),
         current: g.current, deadline: g.deadline, placeIndex: g.placeIndex, placeTotal: g.placeOrder.length,
         last: g.last, result: g.result, turnCount: g.turnCount,
       },
@@ -63,17 +64,13 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
     const P = seated.length;
     const s = room.settings;
     const n = s.size;
-    const per = s.pieces || defaultPieces(P);
-    if (per * P > (n * n) / 2) throw new Error('tooManyPieces');
+    const per = PIECE_TYPES.length; // one square + one round piece each
     for (let i = seated.length - 1; i > 0; i--) { const j = randInt(i + 1); [seated[i], seated[j]] = [seated[j], seated[i]]; }
-    const placeOrder = [];
-    for (let k = 0; k < per; k++) {
-      const order = [...Array(P).keys()];
-      placeOrder.push(...(k % 2 === 0 ? order : order.reverse())); // snake: 1-2-3-3-2-1...
-    }
+    const order = [...Array(P).keys()];
+    const placeOrder = [...order, ...order.slice().reverse()]; // first piece in seat order, second in reverse
     room.game = {
       n, settings: { ...s, pieces: per }, phase: 'placement', walls: emptyWalls(n),
-      players: seated.map((m, i) => ({ id: m.id, name: m.name, color: COLORS[i], pieces: [] })),
+      players: seated.map((m, i) => ({ id: m.id, name: m.name, color: COLORS[i], pieces: [], breakUsed: false })),
       placeOrder, placeIndex: 0, current: placeOrder[0], deadline: 0, last: null, result: null, turnCount: 0,
     };
     sysChat(room, 'start', { P, per, n });
@@ -99,21 +96,29 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
       const empty = [];
       for (let r = 0; r < g.n; r++) for (let c = 0; c < g.n; c++) if (!pieceAt(g.players, r, c)) empty.push({ r, c });
       const cell = empty[randInt(empty.length)];
+      const left = remainingTypes(g.players[g.current]);
       sysChat(room, 'timeoutPlace', { name });
-      doPlace(room, g.current, cell.r, cell.c);
+      doPlace(room, g.current, cell.r, cell.c, left[randInt(left.length)]);
     } else {
-      const acts = legalActions(g, g.current);
-      const stay = acts.filter((a) => { const pc = g.players[g.current].pieces[a.piece]; return pc.r === a.r && pc.c === a.c; });
-      const pool = stay.length ? stay : acts;
+      // Time-out: no move, a wall goes up on a random free side of a random piece.
+      const pl = g.players[g.current];
+      const choices = [];
+      pl.pieces.forEach((pc, k) => freeSides(g, pc.r, pc.c).forEach((dir) => choices.push({ piece: k, dir })));
       sysChat(room, 'timeoutMove', { name });
-      doMove(room, g.current, pool[randInt(pool.length)]);
+      if (choices.length) {
+        const ch = choices[randInt(choices.length)];
+        const pc = pl.pieces[ch.piece];
+        doMove(room, g.current, ch.piece, { r: pc.r, c: pc.c, path: [], broken: null }, ch.dir);
+      } else advanceTurn(room);
     }
     broadcast(room);
   }
 
-  function doPlace(room, p, r, c) {
+  function remainingTypes(pl) { return PIECE_TYPES.filter((t) => !pl.pieces.some((pc) => pc.type === t)); }
+
+  function doPlace(room, p, r, c, type) {
     const g = room.game;
-    g.players[p].pieces.push({ r, c });
+    g.players[p].pieces.push({ r, c, type });
     g.last = { type: 'place', player: p, r, c };
     g.placeIndex++;
     if (g.placeIndex >= g.placeOrder.length) {
@@ -127,14 +132,20 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
     }
   }
 
-  function doMove(room, p, { piece, r, c, dir }) {
+  function doMove(room, p, piece, opt, dir) {
     const g = room.game;
-    const pc = g.players[p].pieces[piece];
+    const pl = g.players[p];
+    const pc = pl.pieces[piece];
     const from = { r: pc.r, c: pc.c };
-    pc.r = r; pc.c = c;
-    setWall(g.walls, r, c, dir);
+    if (opt.broken) {
+      setWall(g.walls, opt.broken.r, opt.broken.c, opt.broken.dir, false);
+      pl.breakUsed = true;
+      sysChat(room, 'broke', { name: pl.name });
+    }
+    pc.r = opt.r; pc.c = opt.c;
+    setWall(g.walls, opt.r, opt.c, dir);
     g.turnCount++;
-    g.last = { type: 'move', player: p, piece, from, r, c, dir };
+    g.last = { type: 'move', player: p, piece, from, path: opt.path, r: opt.r, c: opt.c, dir, broken: opt.broken };
     advanceTurn(room);
   }
 
@@ -145,7 +156,9 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
     const P = g.players.length;
     for (let i = 1; i <= P; i++) {
       const next = (g.current + i) % P;
-      if (!a.sealed[next] && legalActions(g, next).length) { g.current = next; resetDeadline(room); return; }
+      // A separated player keeps playing only while their wall-break could still get them out.
+      const active = !a.sealed[next] || !g.players[next].breakUsed;
+      if (active && legalActions(g, next).length) { g.current = next; resetDeadline(room); return; }
     }
     endGame(room, a);
   }
@@ -269,9 +282,7 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
         if (g && g.phase !== 'ended') return err(connId, 'noChangeInGame');
         const st = room.settings;
         const int = (v, lo, hi, d) => { const x = Math.round(Number(v)); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d; };
-        if ('size' in msg) st.size = int(msg.size, 5, 11, st.size);
-        if ('pieces' in msg) st.pieces = int(msg.pieces, 0, 6, st.pieces);
-        if ('moveSteps' in msg) st.moveSteps = int(msg.moveSteps, 1, 3, st.moveSteps);
+        if ('size' in msg) st.size = int(msg.size, 5, 9, st.size);
         if ('turnSeconds' in msg) st.turnSeconds = int(msg.turnSeconds, 0, 300, st.turnSeconds);
         break;
       }
@@ -294,17 +305,31 @@ export function createEngine({ sendTo, fixedCode = null, onChange = null }) {
         const r = Number(msg.r), c = Number(msg.c);
         if (!Number.isInteger(r) || !Number.isInteger(c) || r < 0 || c < 0 || r >= g.n || c >= g.n) return err(connId, 'badCell');
         if (pieceAt(g.players, r, c)) return err(connId, 'occupied');
-        doPlace(room, myIdx, r, c);
+        const left = remainingTypes(g.players[myIdx]);
+        const type = left.length === 1 ? left[0] : String(msg.type);
+        if (!left.includes(type)) return err(connId, 'badType');
+        doPlace(room, myIdx, r, c, type);
         break;
       }
       case 'move': {
         if (!g || g.phase !== 'play') return err(connId, 'notPlay');
         if (myIdx !== g.current) return err(connId, 'notYourTurn');
-        const piece = Number(msg.piece), r = Number(msg.r), c = Number(msg.c), dir = String(msg.dir);
-        if (!g.players[myIdx].pieces[piece]) return err(connId, 'badPiece');
-        if (!reachable(g, myIdx, piece).some((x) => x.r === r && x.c === c)) return err(connId, 'cantMove');
-        if (!['up', 'down', 'left', 'right'].includes(dir) || hasWall(g.walls, g.n, r, c, dir)) return err(connId, 'cantWall');
-        doMove(room, myIdx, { piece, r, c, dir });
+        const pl = g.players[myIdx];
+        const piece = Number(msg.piece), dir = String(msg.dir), brk = !!msg.brk;
+        const pc = pl.pieces[piece];
+        if (!pc) return err(connId, 'badPiece');
+        if (!isDirs(msg.path)) return err(connId, 'cantMove');
+        if (brk && pl.breakUsed) return err(connId, 'breakUsed');
+        let opt;
+        if (msg.path.length === 0) {
+          if (!mustStay(g, myIdx)) return err(connId, 'mustMove');
+          opt = { r: pc.r, c: pc.c, path: [], broken: null };
+        } else {
+          opt = findMove(g, myIdx, piece, msg.path, brk);
+          if (!opt) return err(connId, 'cantMove');
+        }
+        if (!freeSidesAfter(g, opt).includes(dir)) return err(connId, 'cantWall');
+        doMove(room, myIdx, piece, opt, dir);
         break;
       }
       default: return err(connId, 'unknown');
